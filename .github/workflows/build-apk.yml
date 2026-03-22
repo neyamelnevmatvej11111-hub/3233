@@ -43,21 +43,28 @@ jobs:
 
       - name: Install Android SDK components
         run: |
-          # Accept licenses (non-interactive)
+          # Accept all licenses non-interactively
           yes | sdkmanager --licenses
-          # Install necessary tools
+          # Install required tools
           sdkmanager "platform-tools" "build-tools;34.0.0" "platforms;android-34"
 
-      - name: Configure Godot Android SDK path (fast, without loading project)
+      - name: Configure Godot Android SDK path (direct file write, no Godot startup)
         run: |
-          mkdir -p /tmp/empty_project
-          godot --headless --path /tmp/empty_project --editor-settings export/android/android_sdk_path=$ANDROID_HOME
+          mkdir -p ~/.config/godot
+          cat > ~/.config/godot/editor_settings-4.tres << EOF
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/android_sdk_path = "$ANDROID_HOME"
+          EOF
 
       - name: Verify Android SDK setting (optional)
         run: |
-          grep android_sdk_path ~/.config/godot/editor_settings-4.tres || echo "Setting not found"
+          cat ~/.config/godot/editor_settings-4.tres
+          echo ""
+          echo "SDK path set to: $ANDROID_HOME"
 
-      - name: Generate debug keystore in standard location
+      - name: Generate debug keystore
         run: |
           mkdir -p ~/.android
           keytool -genkey -v -keystore ~/.android/debug.keystore -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
