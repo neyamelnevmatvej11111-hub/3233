@@ -8,6 +8,7 @@ on:
 jobs:
   build-android:
     runs-on: ubuntu-latest
+    timeout-minutes: 30  # общий таймаут на случай зависания
 
     steps:
       - name: Checkout
@@ -58,34 +59,35 @@ jobs:
 
       - name: Set debug keystore in export preset
         run: |
-          # Ensure the preset uses the default debug keystore explicitly
+          # Заполняем поля debug keystore, чтобы Godot не искал их сам
           sed -i 's|keystore/debug=""|keystore/debug="~/.local/share/godot/keystores/debug.keystore"|' export_presets.cfg
           sed -i 's|keystore/debug_user=""|keystore/debug_user="androiddebugkey"|' export_presets.cfg
           sed -i 's|keystore/debug_password=""|keystore/debug_password="android"|' export_presets.cfg
-          # Also ensure package/signed is false (debug builds)
           sed -i 's|package/signed=.*|package/signed=false|' export_presets.cfg
 
-      - name: Validate export preset (list presets)
+      - name: Verify Android preset exists (fast, no Godot)
         run: |
-          godot --headless --list-export-presets || echo "Listing failed"
+          if grep -q 'name="Android"' export_presets.cfg; then
+            echo "✅ Android preset found"
+          else
+            echo "❌ Android preset not found in export_presets.cfg"
+            exit 1
+          fi
 
-      - name: Generate debug keystore (Godot's default location)
+      - name: Generate debug keystore in Godot's default location
         run: |
-          # This will be generated automatically by Godot on first export, but we create it manually to avoid any issues
           mkdir -p ~/.local/share/godot/keystores
-          keytool -genkey -v -keystore ~/.local/share/godot/keystores/debug.keystore -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
+          keytool -genkey -v -keystore ~/.local/share/godot/keystores/debug.keystore \
+            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
 
       - name: Prepare build directory
         run: mkdir -p build
 
-      - name: Export APK (with full verbose output)
+      - name: Export APK
         run: |
-          # Run export and capture stderr to a file
-          godot --headless --verbose --export-debug "Android" "build/SupermarketSimulator.apk" 2>&1 | tee export.log
-          echo "Exit code: $?"
-          cat export.log
-          # Check for specific errors
-          grep -i "error" export.log || echo "No errors found in log"
+          godot --headless --verbose --export-debug "Android" "build/SupermarketSimulator.apk"
+        timeout-minutes: 15  # таймаут на случай зависания экспорта
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -95,7 +97,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Upload export log (for debugging)
+      - name: Upload export log (если провал)
         if: failure()
         uses: actions/upload-artifact@v4
         with:
