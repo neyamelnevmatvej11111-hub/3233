@@ -8,7 +8,7 @@ on:
 jobs:
   build-android:
     runs-on: ubuntu-latest
-    timeout-minutes: 30  # общий таймаут на случай зависания
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -59,13 +59,14 @@ jobs:
 
       - name: Set debug keystore in export preset
         run: |
-          # Заполняем поля debug keystore, чтобы Godot не искал их сам
-          sed -i 's|keystore/debug=""|keystore/debug="~/.local/share/godot/keystores/debug.keystore"|' export_presets.cfg
-          sed -i 's|keystore/debug_user=""|keystore/debug_user="androiddebugkey"|' export_presets.cfg
-          sed -i 's|keystore/debug_password=""|keystore/debug_password="android"|' export_presets.cfg
+          # Заменяем пустые поля keystore на абсолютные пути
+          KEYSTORE_PATH="$HOME/.local/share/godot/keystores/debug.keystore"
+          sed -i "s|keystore/debug=\"\"|keystore/debug=\"$KEYSTORE_PATH\"|" export_presets.cfg
+          sed -i "s|keystore/debug_user=\"\"|keystore/debug_user=\"androiddebugkey\"|" export_presets.cfg
+          sed -i "s|keystore/debug_password=\"\"|keystore/debug_password=\"android\"|" export_presets.cfg
           sed -i 's|package/signed=.*|package/signed=false|' export_presets.cfg
 
-      - name: Verify Android preset exists (fast, no Godot)
+      - name: Verify Android preset exists (fast)
         run: |
           if grep -q 'name="Android"' export_presets.cfg; then
             echo "✅ Android preset found"
@@ -73,6 +74,8 @@ jobs:
             echo "❌ Android preset not found in export_presets.cfg"
             exit 1
           fi
+          echo "--- export_presets.cfg after modifications: ---"
+          cat export_presets.cfg
 
       - name: Generate debug keystore in Godot's default location
         run: |
@@ -84,12 +87,14 @@ jobs:
       - name: Prepare build directory
         run: mkdir -p build
 
-      - name: Export APK
+      - name: Export APK (capture full output)
         run: |
-          godot --headless --verbose --export-debug "Android" "build/SupermarketSimulator.apk"
-        timeout-minutes: 15  # таймаут на случай зависания экспорта
+          godot --headless --verbose --export-debug "Android" "build/SupermarketSimulator.apk" 2>&1 | tee export.log
+          echo "Exit code: $?"
+        timeout-minutes: 15
 
       - name: Upload APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: SupermarketSimulator-APK
@@ -97,7 +102,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Upload export log (если провал)
+      - name: Upload export log (on failure)
         if: failure()
         uses: actions/upload-artifact@v4
         with:
