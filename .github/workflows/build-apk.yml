@@ -42,10 +42,24 @@ jobs:
           echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
           echo "$ANDROID_HOME/build-tools/34.0.0" >> $GITHUB_PATH
 
-      - name: Install Android SDK components
+      - name: Install Android SDK components (multiple versions)
         run: |
           yes | sdkmanager --licenses
-          sdkmanager "platform-tools" "build-tools;34.0.0" "platforms;android-34" "platforms;android-33"
+          # Устанавливаем build-tools для разных версий
+          sdkmanager "platform-tools" \
+                     "build-tools;33.0.0" \
+                     "build-tools;34.0.0" \
+                     "build-tools;35.0.0" \
+                     "platforms;android-33" \
+                     "platforms;android-34" \
+                     "platforms;android-35"
+
+      - name: Verify Android SDK installation
+        run: |
+          echo "Installed platforms:"
+          ls -la $ANDROID_HOME/platforms/ || echo "No platforms found"
+          echo "Installed build-tools:"
+          ls -la $ANDROID_HOME/build-tools/ || echo "No build-tools found"
 
       - name: Configure Godot Android SDK path (direct file write)
         run: |
@@ -59,12 +73,16 @@ jobs:
 
       - name: Set debug keystore in export preset
         run: |
-          # Заменяем пустые поля keystore на абсолютные пути
           KEYSTORE_PATH="$HOME/.local/share/godot/keystores/debug.keystore"
+          # Заменяем пустые поля
           sed -i "s|keystore/debug=\"\"|keystore/debug=\"$KEYSTORE_PATH\"|" export_presets.cfg
           sed -i "s|keystore/debug_user=\"\"|keystore/debug_user=\"androiddebugkey\"|" export_presets.cfg
           sed -i "s|keystore/debug_password=\"\"|keystore/debug_password=\"android\"|" export_presets.cfg
           sed -i 's|package/signed=.*|package/signed=false|' export_presets.cfg
+          # При необходимости можно добавить target SDK
+          if ! grep -q "target_sdk_version" export_presets.cfg; then
+            sed -i '/^\[preset.0.options\]/a target_sdk_version=34' export_presets.cfg
+          fi
 
       - name: Verify Android preset exists (fast)
         run: |
@@ -92,6 +110,14 @@ jobs:
           godot --headless --verbose --export-debug "Android" "build/SupermarketSimulator.apk" 2>&1 | tee export.log
           echo "Exit code: $?"
         timeout-minutes: 15
+
+      - name: Show specific configuration errors (if any)
+        if: failure()
+        run: |
+          echo "===== Configuration errors from export.log ====="
+          grep -E "ERROR:.*Android" export.log || true
+          grep -E "Missing|not found|invalid|unable" export.log -i || true
+          echo "=============================================="
 
       - name: Upload APK
         if: success()
