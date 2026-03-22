@@ -40,11 +40,26 @@ jobs:
           echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
           echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/build-tools/34.0.0" >> $GITHUB_PATH
 
-      - name: Install Android SDK components
+      - name: Install Android SDK components (multiple versions)
         run: |
           yes | sdkmanager --licenses
-          sdkmanager "platform-tools" "build-tools;34.0.0" "platforms;android-34"
+          # Устанавливаем build-tools для разных версий
+          sdkmanager "platform-tools" \
+                     "build-tools;33.0.0" \
+                     "build-tools;34.0.0" \
+                     "build-tools;35.0.0" \
+                     "platforms;android-33" \
+                     "platforms;android-34" \
+                     "platforms;android-35"
+
+      - name: Verify Android SDK installation
+        run: |
+          echo "Installed platforms:"
+          ls -la $ANDROID_HOME/platforms/ || echo "No platforms found"
+          echo "Installed build-tools:"
+          ls -la $ANDROID_HOME/build-tools/ || echo "No build-tools found"
 
       - name: Configure Godot Android SDK path (direct file write)
         run: |
@@ -56,12 +71,62 @@ jobs:
           export/android/android_sdk_path = "$ANDROID_HOME"
           EOF
 
-      - name: Generate new export_presets.cfg from scratch (fix configuration)
+      - name: Generate debug keystore in Godot's default location
         run: |
-          # Create a clean export_presets.cfg with correct Android preset
-          cat > export_presets.cfg << 'EOF'
-          [preset.0]
+          mkdir -p ~/.local/share/godot/keystores
+          keytool -genkey -v -keystore ~/.local/share/godot/keystores/debug.keystore \
+            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
 
+      # === Проверка: создаём минимальный проект и экспортируем его ===
+      - name: Create minimal test project
+        run: |
+          mkdir -p test_project
+          cd test_project
+          # Создаём project.godot
+          cat > project.godot << EOF
+          ; Engine configuration file.
+          ; It's best edited using the editor UI and not directly,
+          ; since the parameters that go here are not all obvious.
+          ;
+          ; Format:
+          ;   [section] ; section comments
+          ;   setting=value ; setting comments
+          ;
+          ; This file is intentionally empty.
+          [application]
+          config/name="TestProject"
+          config/version="1.0"
+          run/main_scene="res://main.tscn"
+          [rendering]
+          renderer/rendering_method="gl_compatibility"
+          renderer/rendering_method.mobile="gl_compatibility"
+          renderer/rendering_method.web="gl_compatibility"
+          [display]
+          window/size/viewport_width=1280
+          window/size/viewport_height=720
+          [editor_plugins]
+          enabled=PackedStringArray()
+          EOF
+          # Создаём простую сцену main.tscn
+          cat > main.tscn << EOF
+          [gd_scene load_steps=2 format=3 uid="uid://test"]
+
+          [ext_resource type="Script" path="res://main.gd" id="1"]
+
+          [node name="Node2D" type="Node2D"]
+          script = ExtResource("1")
+          EOF
+          # Создаём скрипт main.gd
+          cat > main.gd << EOF
+          extends Node2D
+
+          func _ready():
+              print("Hello from test project")
+          EOF
+          # Создаём экспортный пресет для Android
+          cat > export_presets.cfg << EOF
+          [preset.0]
           name="Android"
           platform="Android"
           runnable=true
@@ -70,14 +135,13 @@ jobs:
           export_filter="all_resources"
           include_filter=""
           exclude_filter=""
-          export_path="build/SupermarketSimulator.apk"
+          export_path="build/test.apk"
           encryption_include_filters=""
           encryption_exclude_filters=""
           encrypt_pck=false
           encrypt_directory=false
 
           [preset.0.options]
-
           custom_template/debug=""
           custom_template/release=""
           gradle_build/use_gradle_build=false
@@ -87,14 +151,14 @@ jobs:
           architectures/arm64-v8a=true
           architectures/x86=false
           architectures/x86_64=false
-          keystore/debug="~/.local/share/godot/keystores/debug.keystore"
-          keystore/debug_user="androiddebugkey"
-          keystore/debug_password="android"
+          keystore/debug=""
+          keystore/debug_user=""
+          keystore/debug_password=""
           keystore/release=""
           keystore/release_user=""
           keystore/release_password=""
-          package/unique_name="com.game.supermarket3d"
-          package/name="Supermarket Simulator 3D"
+          package/unique_name="com.test.test"
+          package/name="TestProject"
           package/signed=false
           package/classify_as_game=true
           package/retain_data_on_uninstall=false
@@ -125,35 +189,76 @@ jobs:
           xr_features/passthrough=0
           EOF
 
-      - name: Generate debug keystore in Godot's default location
+      - name: Export test APK
         run: |
-          mkdir -p ~/.local/share/godot/keystores
-          keytool -genkey -v -keystore ~/.local/share/godot/keystores/debug.keystore \
-            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
+          cd test_project
+          mkdir -p build
+          godot --headless --verbose --export-debug "Android" "build/test.apk" 2>&1 | tee test_export.log
+          echo "Test export exit code: $?"
+          if [ -f build/test.apk ]; then
+            echo "✅ Test APK built successfully"
+            ls -la build/
+          else
+            echo "❌ Test APK build failed"
+            cat test_export.log
+            exit 1
+          fi
 
-      - name: Prepare build directory
-        run: mkdir -p build
-
-      - name: Export APK
-        run: |
-          godot --headless --verbose --export-debug "Android" "build/SupermarketSimulator.apk" 2>&1 | tee export.log
-          echo "Exit code: $?"
-        timeout-minutes: 15
-
-      - name: Upload APK
+      # === Если тестовый экспорт прошёл, пробуем экспортировать ваш проект ===
+      - name: Prepare your project export preset
         if: success()
+        run: |
+          # Убедимся, что в вашем export_presets.cfg заполнены поля keystore
+          KEYSTORE_PATH="$HOME/.local/share/godot/keystores/debug.keystore"
+          sed -i "s|keystore/debug=\"\"|keystore/debug=\"$KEYSTORE_PATH\"|" export_presets.cfg
+          sed -i "s|keystore/debug_user=\"\"|keystore/debug_user=\"androiddebugkey\"|" export_presets.cfg
+          sed -i "s|keystore/debug_password=\"\"|keystore/debug_password=\"android\"|" export_presets.cfg
+          sed -i 's|package/signed=.*|package/signed=false|' export_presets.cfg
+          # Добавляем target_sdk_version, если отсутствует
+          if ! grep -q "target_sdk_version" export_presets.cfg; then
+            sed -i '/^\[preset.0.options\]/a target_sdk_version=34' export_presets.cfg
+          fi
+          cat export_presets.cfg
+
+      - name: Export your APK
+        if: success()
+        run: |
+          mkdir -p build
+          godot --headless --verbose --export-debug "Android" "build/SupermarketSimulator.apk" 2>&1 | tee your_export.log
+          echo "Exit code: $?"
+          if [ -f build/SupermarketSimulator.apk ]; then
+            echo "✅ Your APK built successfully"
+          else
+            echo "❌ Your APK build failed"
+            cat your_export.log
+            exit 1
+          fi
+
+      - name: Upload APK (if any)
+        if: success() && (success() || failure())
         uses: actions/upload-artifact@v4
         with:
           name: SupermarketSimulator-APK
           path: build/SupermarketSimulator.apk
-          if-no-files-found: error
+          if-no-files-found: ignore
           retention-days: 30
 
-      - name: Upload export log (on failure)
+      - name: Upload test APK (for diagnostics)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-APK
+          path: test_project/build/test.apk
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload export logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: export-log
-          path: export.log
+          name: export-logs
+          path: |
+            test_project/test_export.log
+            your_export.log
+          if-no-files-found: ignore
           retention-days: 7
